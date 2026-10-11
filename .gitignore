@@ -1,1 +1,3 @@
 __pycache__
+# Generated glyph crops (tens of thousands of files, reproducible via glyph-extract)
+data/processed/

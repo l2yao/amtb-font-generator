@@ -1,0 +1,6 @@
+-r requirements.txt
+torch
+torchvision
+diffusers
+transformers
+accelerate

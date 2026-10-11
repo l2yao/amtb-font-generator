@@ -1,44 +1,118 @@
-# Chinese Font Generator Pipeline
+# Chinese Font Generator
 
-This repository provides an automated pipeline for **Few-Shot Chinese Font Generation**. Given a few samples of a person's handwritten Chinese characters, this framework utilizes the State-of-the-Art [zi2zi-JiT](https://github.com/kaonashi-tyc/zi2zi-JiT) (Pixel Space Diffusion Transformers) to learn the user's calligraphy style and synthesize a complete TrueType Font (`.ttf`).
+This project takes labeled Chinese calligraphy glyph images and builds a real TrueType font (`.ttf`).
 
-## Repository Map
+The default workflow is intentionally small:
 
-The project pipeline stitches together three stages:
+1. Put one glyph image per character in a folder.
+2. Audit filenames and target coverage.
+3. Build the font.
 
-1. **Preprocess (`src/preprocess/extract_grid.py`)** 
-   - Uses PaddleOCR to automatically detect, crop, and label each handwritten character from a scanned page into individual images.
-2. **Engine (`src/engine/run_zi2zi.py`)** 
-   - Acts as a wrapper over the custom **zi2zi-JiT** architecture.
-   - Automatically utilizes `lora_single_gpu_finetune_jit.py` to efficiently teach the Diffusion Transformer your style using limited VRAM.
-   - Uses `generate_chars.py` with fast `ab2` samplers to bulk-generate your styling over standard Chinese content vectors.
-3. **Build Font (`src/build_font/vectorize.py`)**
-   - Synthesizes the output `.png` character images into scalable vector paths.
-   - Packages them into `.ttf`.
+LLMs are best used as an assistant around this deterministic core: preparing a target character list, spotting missing glyphs, suggesting filename fixes, creating review checklists, and optionally driving a cloud image model for draft glyphs. The actual font compilation stays local and repeatable.
 
-## Setup Instructions
+## Install
 
-### Running Locally
-To run this pipeline locally, you will need a GPU with at least 4GB-8GB VRAM (for LoRA fine-tuning).
+```bash
+pip install -r requirements.txt
+```
 
-1. Clone this directory.
-2. Install dependencies. We recommend using conda as dictated by zi2zi-JiT:
-   ```bash
-   conda env create -f environment.yaml 
-   conda activate zi2zi-jit 
-   pip install -r requirements.txt
-   ```
-3. Run the scripts sequentially:
-   ```bash
-   python src/preprocess/extract_grid.py 
-   python src/engine/run_zi2zi.py
-   python src/build_font/vectorize.py
-   ```
+Default dependencies:
 
-### Running in Google Colab (Highly Recommended)
+- `Pillow`
+- `fonttools`
+- `opencv-python`
 
-If you do not have adequate local GPU hardware, you can easily train this model using a free Google Colab T4 GPU!
+Optional dependencies:
 
-A fully contained notebook is provided in the root directory: `Font_Generation_Colab.ipynb`
+```bash
+pip install -r requirements-ocr.txt
+pip install -r requirements-ai.txt
+```
 
-Simply upload the notebook to [Google Colab](https://colab.research.google.com/), execute the cells sequentially to install the requirements, clone the zi2zi-JiT engine, process your handwriting, and generate your font files.
+OCR and AI/model dependencies are not required for the basic font builder.
+
+## Glyph Filename Rules
+
+Each image filename defines the Unicode character it represents. Supported forms:
+
+- `你.png`
+- `uni4F60.png`
+- `U+4F60.png`
+- `4F60.png`
+
+Images with invalid names are skipped by the builder and reported by the audit command.
+
+## Audit Glyphs
+
+Check a glyph folder:
+
+```bash
+python src/generate_font.py audit --glyph_dir data/glyphs
+```
+
+Check coverage against target text:
+
+```bash
+python src/generate_font.py audit ^
+  --glyph_dir data/glyphs ^
+  --target_text "你好中文"
+```
+
+Or use a UTF-8 target file:
+
+```bash
+python src/generate_font.py audit ^
+  --glyph_dir data/glyphs ^
+  --target_file data/target_chars.txt
+```
+
+The missing-character output is suitable to paste into an LLM or image-generation workflow as the next glyph request list.
+
+## Build a TTF
+
+```bash
+python src/generate_font.py build ^
+  --glyph_dir data/glyphs ^
+  --output_ttf output/calligraphy.ttf ^
+  --family_name "My Calligraphy"
+```
+
+You can also call the builder directly:
+
+```bash
+python src/build_font/vectorize.py ^
+  --glyph_dir data/glyphs ^
+  --output_ttf output/calligraphy.ttf
+```
+
+## Optional OCR Extraction
+
+If you want to crop and label characters from scanned pages, install OCR dependencies first:
+
+```bash
+pip install -r requirements-ocr.txt
+```
+
+Then run:
+
+```bash
+python src/generate_font.py ocr-extract ^
+  --image_path data/samples ^
+  --output_dir data/glyphs
+```
+
+Review OCR output carefully before building the font. A wrong filename creates a wrong Unicode mapping.
+
+## Optional AI Generation
+
+The repo keeps `src/engine/run_zi2zi.py` as an experimental adapter for local model-based glyph generation, but it is not part of the default path.
+
+For a leaner LLM-centered product, prefer this loop:
+
+1. Build or audit the current glyph set.
+2. Use the missing-character report as the request list.
+3. Ask an LLM/image model to create draft glyph images in the same style.
+4. Save approved drafts using Unicode filenames.
+5. Re-run `audit`, then `build`.
+
+This keeps the font builder simple while allowing AI help where it is useful.
