@@ -38,6 +38,18 @@ def _is_safe_char(text):
     return True
 
 
+def _is_han_char(text):
+    """Only Han ideographs belong in the font: no digits, Latin,
+    punctuation, symbols, bopomofo, radicals, or compatibility forms."""
+    cp = ord(text)
+    return (
+        (0x3400 <= cp <= 0x4DBF)  # CJK Extension A
+        or (0x4E00 <= cp <= 0x9FFF)  # CJK Unified Ideographs
+        or (0xF900 <= cp <= 0xFAFF)  # CJK Compatibility Ideographs
+        or (0x20000 <= cp <= 0x3134F)  # CJK Extensions B-G
+    )
+
+
 def _worker_init():
     global _OCR
     from rapidocr_onnxruntime import RapidOCR
@@ -106,6 +118,9 @@ def main():
                 queued += 1
             elif not _is_safe_char(text):
                 review_fh.write(f"{name}\tILLEGAL {repr(text)} {conf:.2f}\n")
+                queued += 1
+            elif not _is_han_char(text):
+                review_fh.write(f"{name}\tNONHAN {text} U+{ord(text):04X} {conf:.2f}\n")
                 queued += 1
             elif conf < args.conf:
                 review_fh.write(f"{name}\tLOWCONF {text} {conf:.2f}\n")
