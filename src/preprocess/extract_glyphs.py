@@ -257,7 +257,12 @@ def _save_glyph(char_img, output_size, text, idx, stem, output_dir):
     side = max(char_img.width, char_img.height)
     canvas = Image.new("L", (side, side), 255)
     canvas.paste(char_img, ((side - char_img.width) // 2, (side - char_img.height) // 2))
-    canvas = canvas.resize((output_size, output_size), Image.Resampling.LANCZOS)
+    # Extra white margin: edge-touching crops (e.g. last char in a strip)
+    # would otherwise render clipped after vectorization.
+    margin = max(2, int(side * 0.06))
+    bordered = Image.new("L", (side + 2 * margin, side + 2 * margin), 255)
+    bordered.paste(canvas, (margin, margin))
+    canvas = bordered.resize((output_size, output_size), Image.Resampling.LANCZOS)
 
     if text is not None and idx < len(text):
         char = text[idx]

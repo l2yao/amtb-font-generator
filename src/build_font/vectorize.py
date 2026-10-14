@@ -97,6 +97,23 @@ def iter_glyph_images(glyph_dir):
     return sorted(paths)
 
 
+def fix_os2_for_word(font, cmap):
+    """Patch OS/2 so Word/GDI treat the font as CJK-capable.
+
+    FontBuilder leaves ulUnicodeRange at Basic-Latin-only, which makes
+    Word font-substitute a system font for all Chinese text even when
+    this font is selected. Set the CJK range bit, CJK code pages, and
+    the REGULAR selection flag.
+    """
+    os2 = font["OS/2"]
+    codepoints = list(cmap.keys())
+    if any(0x4E00 <= cp <= 0x9FFF for cp in codepoints):
+        os2.ulUnicodeRange2 |= 1 << (59 - 32)  # Bit 59: CJK Unified Ideographs
+        # 932 JIS/Japan, 936 Simplified Chinese, 949 Korean, 950 Traditional Chinese
+        os2.ulCodePageRange1 |= (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
+    os2.fsSelection |= 1 << 6  # REGULAR
+
+
 def images_to_ttf(
     glyph_dir,
     output_ttf_path,
@@ -164,6 +181,7 @@ def images_to_ttf(
         usWinAscent=ascent,
         usWinDescent=abs(descent),
     )
+    fix_os2_for_word(fb.font, cmap)
     fb.setupNameTable(
         {
             "familyName": family_name,
