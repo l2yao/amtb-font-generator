@@ -45,7 +45,7 @@ def contour_area(contour):
 def draw_contours_to_pen(mask, pen, units_per_em, ascent, descent, simplify):
     bounds = mask_content_bounds(mask)
     if bounds is None:
-        return 0
+        return 0, 0
 
     x0, y0, x1, y1 = bounds
     content_width = max(1, x1 - x0)
@@ -87,7 +87,7 @@ def draw_contours_to_pen(mask, pen, units_per_em, ascent, descent, simplify):
         pen.closePath()
         drawn += 1
 
-    return drawn
+    return drawn, round(x_offset)
 
 
 def iter_glyph_images(glyph_dir):
@@ -152,14 +152,14 @@ def images_to_ttf(
         glyph_name = glyph_name_for_codepoint(codepoint)
         mask = load_ink_mask(glyph_path, threshold=threshold)
         pen = TTGlyphPen(None)
-        contour_count = draw_contours_to_pen(mask, pen, units_per_em, ascent, descent, simplify)
+        contour_count, left_bearing = draw_contours_to_pen(mask, pen, units_per_em, ascent, descent, simplify)
         if contour_count == 0:
             skipped.append(f"Skipped blank glyph image: {glyph_path}")
             continue
 
         cmap[codepoint] = glyph_name
         glyphs[glyph_name] = pen.glyph()
-        metrics[glyph_name] = (units_per_em, 0)
+        metrics[glyph_name] = (units_per_em, left_bearing)
         glyph_order.append(glyph_name)
 
     if len(glyph_order) <= 2:
