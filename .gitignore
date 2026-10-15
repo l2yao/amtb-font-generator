@@ -4,5 +4,8 @@ data/processed/
 # Downloaded base fonts (reproducible; see merge_fallback.py --help for sources)
 data/fonts/*.ttf
 data/fonts/*.otf
+# Downloaded amtb.tw originals (2.3GB; reproducible via download_amtb.py).
+# The manifest (transcriptions) is force-added separately.
+data/amtb_raw/
 # Built fonts (reproducible via generate_font.py / merge_fallback.py)
 output/
