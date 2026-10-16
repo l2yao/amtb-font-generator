@@ -125,8 +125,34 @@ def main():
     if shard_args.nshards > 1:
         chars = [c for i, c in enumerate(chars) if i % shard_args.nshards == shard_args.shard]
     print(f"shard {shard_args.shard}/{shard_args.nshards}: {len(chars)} chars", flush=True)
+
+    import cv2 as _cv2
+    import numpy as _np
+
+    def _ink_ratio(p):
+        try:
+            raw = _np.fromfile(str(p), dtype=_np.uint8)
+            img = _cv2.imdecode(raw, _cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                return 0.0
+            return float((img < 200).mean())
+        except Exception:
+            return 0.0
+
     for n, ch in enumerate(chars):
         samples = pool[ch]
+        # Fragment guard: drop samples with far less ink than the char's
+        # fullest sample (segmentation fragments score well on sharpness
+        # and margins but are broken glyphs).
+        ratios = [(s, _ink_ratio(s[0])) for s in samples]
+        fullest = max((r for _, r in ratios), default=0.0)
+        if fullest > 0:
+            samples = [s for s, r in ratios if r >= 0.45 * fullest]
+        if not samples:
+            dropped_bad += 1
+            if ch in existing:
+                existing[ch].unlink(missing_ok=True)
+            continue
         best_path, best_score, best_trusted = None, -2.0, False
         for png, trusted in samples:
             if not trusted:
