@@ -11,14 +11,19 @@ OUTPUT_SIZE = 256
 PADDING_RATIO = 0.15
 
 
-def extract_glyphs_strip(image, output_size, text, stem, output_dir, image_path):
+def detect_glyph_boxes(image):
+    """Find character bounding boxes. Returns (items, h, w).
+
+    items entries are (x, y, cw, ch, area, y_center). Order is NOT
+    reading order; use order_boxes_*() to sort.
+    """
     img_array = np.array(image)
     h, w = img_array.shape
     img_area = h * w
 
     _, binary = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    k = max(3, int(min(h, w) * 0.008))
+    k = min(20, max(3, int(min(h, w) * 0.008)))
     k = k | 1
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
     processed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
@@ -51,7 +56,7 @@ def extract_glyphs_strip(image, output_size, text, stem, output_dir, image_path)
         areas_all = sorted([c[4] for c in candidates])
         median_area = areas_all[len(areas_all) // 2]
         wide_strip = w > h * 1.2
-        close_up = median_area > img_area * 0.012
+        close_up = median_area > img_area * 0.008
         do_merge = wide_strip or close_up
     else:
         do_merge = False
@@ -93,68 +98,123 @@ def extract_glyphs_strip(image, output_size, text, stem, output_dir, image_path)
             candidates = merged
 
     if not candidates:
-        return extract_glyphs_single(image, output_size, text, stem, output_dir, image_path)
+        return [], h, w
 
     areas = sorted([c[4] for c in candidates])
     median_a = areas[len(areas) // 2]
-    filtered = [(x, y, cw, ch, area) for x, y, cw, ch, area, _ext in candidates if area >= median_a * 0.08]
-    if not filtered:
+    # Mixed-size pages (titles + small signatures): relax the noise floor
+    # so small characters survive; uniform pages keep the strict floor.
+    spread = areas[-1] / max(median_a, 1.0)
+    floor_ratio = 0.03 if spread > 8 else 0.08
+    items = [(x, y, cw, ch, area, y + ch / 2)
+             for x, y, cw, ch, area, _ext in candidates if area >= median_a * floor_ratio]
+    return items, h, w
+
+
+def group_columns(items):
+    """Group boxes into columns by horizontal gaps. Returns list of columns
+    (each a list of items), ordered left-to-right."""
+    if not items:
         return []
+    by_x = sorted(items, key=lambda v: v[0])
+    widths = sorted([v[2] for v in by_x])
+    gap_th = max(15, widths[len(widths) // 2] * 0.35)
+    cols, cur = [], [by_x[0]]
+    for item in by_x[1:]:
+        prev = cur[-1]
+        gap = item[0] - (prev[0] + prev[2])
+        if gap <= gap_th:
+            cur.append(item)
+        else:
+            cols.append(cur)
+            cur = [item]
+    cols.append(cur)
+    return cols
 
-    items = [(x, y, cw, ch, area, y + ch / 2) for x, y, cw, ch, area in filtered]
-    is_tall = h > w * 1.5
 
-    if is_tall:
-        items.sort(key=lambda v: v[0])
-        col_th = max([v[2] for v in items][len(items)//2], 10)
-        cols = []
-        cur_col = [items[0]]
-        for item in items[1:]:
-            if abs(item[0] - cur_col[-1][0]) <= col_th:
-                cur_col.append(item)
-            else:
-                cur_col.sort(key=lambda v: v[5])
-                cols.append(cur_col)
-                cur_col = [item]
-        if cur_col:
-            cur_col.sort(key=lambda v: v[5])
-            cols.append(cur_col)
-        sorted_chars = []
-        for col in cols:
-            sorted_chars.extend(col)
-    else:
-        items.sort(key=lambda v: v[5])
-        row_th = max([v[3] for v in items][len(items)//2], 10)
+def column_major_orders(cols, column_order="rtl"):
+    """All plausible column reading orders (each a flat item list)."""
+    ordered = [sorted(col, key=lambda v: v[5]) for col in cols]
+    use = ordered[::-1] if column_order == "rtl" else ordered
+    result = [[item for col in use for item in col]]
+    # Uniform grids read row-major; offer it as an alternative.
+    counts = {len(col) for col in ordered}
+    if len(ordered) >= 2 and len(counts) == 1:
+        n = len(ordered[0])
         rows = []
-        cur_row = [items[0]]
-        for item in items[1:]:
-            if abs(item[5] - cur_row[-1][5]) <= row_th:
-                cur_row.append(item)
-            else:
-                cur_row.sort(key=lambda v: v[0])
-                rows.append(cur_row)
-                cur_row = [item]
-        if cur_row:
-            cur_row.sort(key=lambda v: v[0])
-            rows.append(cur_row)
-        sorted_chars = []
-        for row in rows:
-            sorted_chars.extend(row)
+        for i in range(n):
+            row = sorted([ordered[j][i] for j in range(len(ordered))],
+                         key=lambda v: v[0])
+            rows.append(row)
+        result.append([item for row in rows for item in row])
+    return result
 
-    if text is not None and len(text) != len(sorted_chars):
-        print(f"  Warning: text length ({len(text)}) != characters found ({len(sorted_chars)})")
 
+def row_major_order(items):
+    """Reading order for horizontal (row-based) layouts."""
+    if not items:
+        return []
+    by_y = sorted(items, key=lambda v: v[5])
+    heights = sorted([v[3] for v in by_y])
+    row_th = max(heights[len(heights) // 2], 10)
+    rows, cur = [], [by_y[0]]
+    for item in by_y[1:]:
+        if abs(item[5] - cur[-1][5]) <= row_th:
+            cur.append(item)
+        else:
+            rows.append(sorted(cur, key=lambda v: v[0]))
+            cur = [item]
+    rows.append(sorted(cur, key=lambda v: v[0]))
+    return [item for row in rows for item in row]
+
+
+def save_ordered_crops(image, ordered, output_size, text, stem, output_dir):
+    from PIL import Image as PILImage  # noqa: F401 (keeps PIL namespace clear)
+
+    h, w = image.height, image.width
+    if text is not None and len(text) != len(ordered):
+        print(f"  Warning: text length ({len(text)}) != characters found ({len(ordered)})")
     saved = []
-    for idx, (x, y, cw, ch, area, yc) in enumerate(sorted_chars):
+    for idx, (x, y, cw, ch, area, yc) in enumerate(ordered):
         pad = max(8, int(min(cw, ch) * PADDING_RATIO))
-        x0 = max(0, x - pad)
-        y0 = max(0, y - pad)
-        x1 = min(w, x + cw + pad)
-        y1 = min(h, y + ch + pad)
+        x0 = max(0, int(x - pad))
+        y0 = max(0, int(y - pad))
+        x1 = min(w, int(x + cw + pad))
+        y1 = min(h, int(y + ch + pad))
         char_img = image.crop((x0, y0, x1, y1))
         saved.append(_save_glyph(char_img, output_size, text, idx, stem, output_dir))
-
     return saved
+
+
+def extract_glyphs_strip(image, output_size, text, stem, output_dir, image_path,
+                        column_order="ltr"):
+    """Extract character boxes in reading order.
+
+    Wide images use row-major order. Portrait/square images use columns
+    (column_order "rtl" for traditional vertical text, "ltr" otherwise);
+    uniform grids additionally try row-major order.
+    """
+    items, h, w = detect_glyph_boxes(image)
+    if not items:
+        return extract_glyphs_single(image, output_size, text, stem, output_dir, image_path)
+
+    is_tall = h > w * 1.5
+    if not is_tall and not (w > h * 1.2):
+        # Square-ish page: pick column-major or row-major by grid test.
+        cols = group_columns(items)
+        orders = column_major_orders(cols, column_order=column_order)
+        ordered = orders[0]
+    elif is_tall:
+        cols = group_columns(items)
+        if column_order == "rtl":
+            ordered = [item for col in [sorted(c, key=lambda v: v[5]) for c in cols][::-1]
+                       for item in col]
+        else:
+            ordered = [item for col in [sorted(c, key=lambda v: v[5]) for c in cols]
+                       for item in col]
+    else:
+        ordered = row_major_order(items)
+    return save_ordered_crops(image, ordered, output_size, text, stem, output_dir)
 
 
 def extract_glyphs_single(image, output_size, text, stem, output_dir, image_path):
@@ -290,7 +350,8 @@ def remove_red_seals(rgb_image):
     return rgb_image
 
 
-def extract_glyphs(image_path, output_dir, output_size=OUTPUT_SIZE, text=None, mode="strip"):
+def extract_glyphs(image_path, output_dir, output_size=OUTPUT_SIZE, text=None, mode="strip",
+                   column_order="ltr"):
     rgb = Image.open(image_path).convert("RGB")
     rgb = remove_red_seals(rgb)
     image = ImageOps.autocontrast(rgb.convert("L"))
@@ -301,7 +362,8 @@ def extract_glyphs(image_path, output_dir, output_size=OUTPUT_SIZE, text=None, m
     elif mode == "page":
         return extract_glyphs_page(image, output_size, text, stem, output_dir, image_path)
     else:
-        return extract_glyphs_strip(image, output_size, text, stem, output_dir, image_path)
+        return extract_glyphs_strip(image, output_size, text, stem, output_dir, image_path,
+                                    column_order=column_order)
 
 
 def glyph_extract_main(args):
